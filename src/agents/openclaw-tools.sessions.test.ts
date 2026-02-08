@@ -848,6 +848,52 @@ describe("sessions tools", () => {
     resetSubagentRegistryForTests();
   });
 
+  it("subagents numeric targets follow active-first list ordering", async () => {
+    resetSubagentRegistryForTests();
+    callGatewayMock.mockReset();
+    addSubagentRunForTests({
+      runId: "run-active",
+      childSessionKey: "agent:main:subagent:active",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "active task",
+      cleanup: "keep",
+      createdAt: Date.now() - 120_000,
+      startedAt: Date.now() - 120_000,
+    });
+    addSubagentRunForTests({
+      runId: "run-recent",
+      childSessionKey: "agent:main:subagent:recent",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "recent task",
+      cleanup: "keep",
+      createdAt: Date.now() - 30_000,
+      startedAt: Date.now() - 30_000,
+      endedAt: Date.now() - 10_000,
+      outcome: { status: "ok" },
+    });
+
+    const tool = createOpenClawTools({
+      agentSessionKey: "agent:main:main",
+    }).find((candidate) => candidate.name === "subagents");
+    expect(tool).toBeDefined();
+    if (!tool) {
+      throw new Error("missing subagents tool");
+    }
+
+    const result = await tool.execute("call-subagents-kill-order", {
+      action: "kill",
+      target: "1",
+    });
+    const details = result.details as { status?: string; runId?: string; text?: string };
+    expect(details.status).toBe("ok");
+    expect(details.runId).toBe("run-active");
+    expect(details.text).toContain("killed");
+
+    resetSubagentRegistryForTests();
+  });
+
   it("subagents kill stops a running run", async () => {
     resetSubagentRegistryForTests();
     callGatewayMock.mockReset();

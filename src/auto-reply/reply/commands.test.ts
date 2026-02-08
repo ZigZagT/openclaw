@@ -6,6 +6,7 @@ import type { OpenClawConfig } from "../../config/config.js";
 import type { MsgContext } from "../templating.js";
 import {
   addSubagentRunForTests,
+  listSubagentRunsForRequester,
   resetSubagentRegistryForTests,
 } from "../../agents/subagent-registry.js";
 import { updateSessionStore } from "../../config/sessions.js";
@@ -273,6 +274,35 @@ describe("handleCommands subagents", () => {
     expect(result.shouldContinue).toBe(false);
     expect(result.reply?.text).toContain("active subagents:");
     expect(result.reply?.text).toContain("recent (last 30m):");
+    expect(result.reply?.text).not.toContain("\n\nrecent (last 30m):");
+  });
+
+  it("does not truncate subagent task text in /subagents list", async () => {
+    resetSubagentRegistryForTests();
+    callGatewayMock.mockReset();
+    addSubagentRunForTests({
+      runId: "run-long-task",
+      childSessionKey: "agent:main:subagent:long-task",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "This is a deliberately long task description used to verify that subagent list output keeps the full task text instead of appending ellipsis after a short hard cutoff.",
+      cleanup: "keep",
+      createdAt: 1000,
+      startedAt: 1000,
+    });
+    const cfg = {
+      commands: { text: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/subagents list", cfg);
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain(
+      "This is a deliberately long task description used to verify that subagent list output keeps the full task text",
+    );
+    expect(result.reply?.text).not.toContain(
+      "This is a deliberately long task description used to verify that subagent list output keeps the full task text instead...",
+    );
   });
 
   it("lists subagents for the current command session over the target session", async () => {
@@ -445,6 +475,7 @@ describe("handleCommands subagents", () => {
   it("returns info for a subagent", async () => {
     resetSubagentRegistryForTests();
     callGatewayMock.mockReset();
+    const now = Date.now();
     addSubagentRunForTests({
       runId: "run-1",
       childSessionKey: "agent:main:subagent:abc",
@@ -452,9 +483,9 @@ describe("handleCommands subagents", () => {
       requesterDisplayKey: "main",
       task: "do thing",
       cleanup: "keep",
-      createdAt: 1000,
-      startedAt: 1000,
-      endedAt: 2000,
+      createdAt: now - 20_000,
+      startedAt: now - 20_000,
+      endedAt: now - 1_000,
       outcome: { status: "ok" },
     });
     const cfg = {
@@ -482,6 +513,42 @@ describe("handleCommands subagents", () => {
       cleanup: "keep",
       createdAt: 1000,
       startedAt: 1000,
+    });
+    const cfg = {
+      commands: { text: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/kill 1", cfg);
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply).toBeUndefined();
+  });
+
+  it("resolves numeric aliases in active-first display order", async () => {
+    resetSubagentRegistryForTests();
+    callGatewayMock.mockReset();
+    const now = Date.now();
+    addSubagentRunForTests({
+      runId: "run-active",
+      childSessionKey: "agent:main:subagent:active",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "active task",
+      cleanup: "keep",
+      createdAt: now - 120_000,
+      startedAt: now - 120_000,
+    });
+    addSubagentRunForTests({
+      runId: "run-recent",
+      childSessionKey: "agent:main:subagent:recent",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "recent task",
+      cleanup: "keep",
+      createdAt: now - 30_000,
+      startedAt: now - 30_000,
+      endedAt: now - 10_000,
+      outcome: { status: "ok" },
     });
     const cfg = {
       commands: { text: true },
@@ -521,6 +588,10 @@ describe("handleCommands subagents", () => {
     const result = await handleCommands(params);
     expect(result.shouldContinue).toBe(false);
     expect(result.reply?.text).toContain("steered");
+    const trackedRuns = listSubagentRunsForRequester("agent:main:main");
+    expect(trackedRuns).toHaveLength(1);
+    expect(trackedRuns[0].runId).toBe("run-steer-1");
+    expect(trackedRuns[0].endedAt).toBeUndefined();
   });
 });
 

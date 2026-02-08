@@ -224,21 +224,28 @@ function resolveUsageDisplay(entry?: SessionEntry) {
 function resolveSubagentTarget(
   runs: SubagentRunRecord[],
   token: string | undefined,
+  options?: { recentMinutes?: number },
 ): TargetResolution {
   const trimmed = token?.trim();
   if (!trimmed) {
     return { error: "Missing subagent target." };
   }
   const sorted = sortRuns(runs);
+  const recentMinutes = options?.recentMinutes ?? DEFAULT_RECENT_MINUTES;
+  const recentCutoff = Date.now() - recentMinutes * 60_000;
+  const numericOrder = [
+    ...sorted.filter((entry) => !entry.endedAt),
+    ...sorted.filter((entry) => !!entry.endedAt && (entry.endedAt ?? 0) >= recentCutoff),
+  ];
   if (trimmed === "last") {
     return { entry: sorted[0] };
   }
   if (/^\d+$/.test(trimmed)) {
     const idx = Number.parseInt(trimmed, 10);
-    if (!Number.isFinite(idx) || idx <= 0 || idx > sorted.length) {
+    if (!Number.isFinite(idx) || idx <= 0 || idx > numericOrder.length) {
       return { error: `Invalid subagent index: ${trimmed}` };
     }
-    return { entry: sorted[idx - 1] };
+    return { entry: numericOrder[idx - 1] };
   }
   if (trimmed.includes(":")) {
     const bySessionKey = sorted.find((entry) => entry.childSessionKey === trimmed);
@@ -464,12 +471,12 @@ export function createSubagentsTool(opts?: { agentSessionKey?: string }): AnyAge
         agentSessionKey: opts?.agentSessionKey,
       });
       const runs = sortRuns(listSubagentRunsForRequester(requester.requesterSessionKey));
+      const recentMinutesRaw = readNumberParam(params, "recentMinutes");
+      const recentMinutes = recentMinutesRaw
+        ? Math.max(1, Math.min(MAX_RECENT_MINUTES, Math.floor(recentMinutesRaw)))
+        : DEFAULT_RECENT_MINUTES;
 
       if (action === "list") {
-        const recentMinutesRaw = readNumberParam(params, "recentMinutes");
-        const recentMinutes = recentMinutesRaw
-          ? Math.max(1, Math.min(MAX_RECENT_MINUTES, Math.floor(recentMinutesRaw)))
-          : DEFAULT_RECENT_MINUTES;
         const now = Date.now();
         const recentCutoff = now - recentMinutes * 60_000;
         const cache = new Map<string, Record<string, SessionEntry>>();
@@ -589,7 +596,7 @@ export function createSubagentsTool(opts?: { agentSessionKey?: string }): AnyAge
                 : "no running subagents to kill.",
           });
         }
-        const resolved = resolveSubagentTarget(runs, target);
+        const resolved = resolveSubagentTarget(runs, target, { recentMinutes });
         if (!resolved.entry) {
           return jsonResult({
             status: "error",
@@ -648,7 +655,7 @@ export function createSubagentsTool(opts?: { agentSessionKey?: string }): AnyAge
             error: `Message too long (${message.length} chars, max ${MAX_STEER_MESSAGE_CHARS}).`,
           });
         }
-        const resolved = resolveSubagentTarget(runs, target);
+        const resolved = resolveSubagentTarget(runs, target, { recentMinutes });
         if (!resolved.entry) {
           return jsonResult({
             status: "error",

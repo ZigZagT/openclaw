@@ -3,7 +3,11 @@ import type { SubagentRunRecord } from "../../agents/subagent-registry.js";
 import type { CommandHandler } from "./commands-types.js";
 import { AGENT_LANE_SUBAGENT } from "../../agents/lanes.js";
 import { abortEmbeddedPiRun } from "../../agents/pi-embedded.js";
-import { listSubagentRunsForRequester } from "../../agents/subagent-registry.js";
+import {
+  listSubagentRunsForRequester,
+  markSubagentRunForSteerRestart,
+  replaceSubagentRunAfterSteer,
+} from "../../agents/subagent-registry.js";
 import {
   extractAssistantText,
   resolveInternalSessionKey,
@@ -79,6 +83,10 @@ function truncateLine(value: string, maxLength: number) {
     return value;
   }
   return `${value.slice(0, maxLength).trimEnd()}...`;
+}
+
+function compactLine(value: string) {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 function resolveModelDisplay(entry?: {
@@ -211,12 +219,17 @@ function resolveSubagentTarget(
     return { entry: sorted[0] };
   }
   const sorted = sortSubagentRuns(runs);
+  const recentCutoff = Date.now() - RECENT_WINDOW_MINUTES * 60_000;
+  const numericOrder = [
+    ...sorted.filter((entry) => !entry.endedAt),
+    ...sorted.filter((entry) => !!entry.endedAt && (entry.endedAt ?? 0) >= recentCutoff),
+  ];
   if (/^\d+$/.test(trimmed)) {
     const idx = Number.parseInt(trimmed, 10);
-    if (!Number.isFinite(idx) || idx <= 0 || idx > sorted.length) {
+    if (!Number.isFinite(idx) || idx <= 0 || idx > numericOrder.length) {
       return { error: `Invalid subagent index: ${trimmed}` };
     }
-    return { entry: sorted[idx - 1] };
+    return { entry: numericOrder[idx - 1] };
   }
   if (trimmed.includes(":")) {
     const match = runs.find((entry) => entry.childSessionKey === trimmed);
@@ -416,7 +429,7 @@ export const handleSubagentsCommand: CommandHandler = async (params, allowTextCo
         );
         const usageText = resolveUsageDisplay(sessionEntry);
         const label = truncateLine(formatRunLabel(entry, { maxLength: 48 }), 48);
-        const task = truncateLine(entry.task.trim(), 72);
+        const task = compactLine(entry.task);
         const runtime = formatDurationCompact(now - (entry.startedAt ?? entry.createdAt));
         const status = resolveDisplayStatus(entry);
         const line = `${index}. ${label} (${resolveModelDisplay(sessionEntry)}, ${runtime}${usageText ? `, ${usageText}` : ""}) ${status}${task.toLowerCase() !== label.toLowerCase() ? ` - ${task}` : ""}`;
@@ -433,7 +446,7 @@ export const handleSubagentsCommand: CommandHandler = async (params, allowTextCo
         );
         const usageText = resolveUsageDisplay(sessionEntry);
         const label = truncateLine(formatRunLabel(entry, { maxLength: 48 }), 48);
-        const task = truncateLine(entry.task.trim(), 72);
+        const task = compactLine(entry.task);
         const runtime = formatDurationCompact(
           (entry.endedAt ?? now) - (entry.startedAt ?? entry.createdAt),
         );
@@ -449,7 +462,7 @@ export const handleSubagentsCommand: CommandHandler = async (params, allowTextCo
     } else {
       lines.push(...activeLines);
     }
-    lines.push("", `recent (last ${RECENT_WINDOW_MINUTES}m):`);
+    lines.push(`recent (last ${RECENT_WINDOW_MINUTES}m):`);
     if (recentLines.length === 0) {
       lines.push("(none)");
     } else {
@@ -629,6 +642,9 @@ export const handleSubagentsCommand: CommandHandler = async (params, allowTextCo
         : undefined;
 
     if (steerRequested) {
+      // Suppress stale announce before interrupting the in-flight run.
+      markSubagentRunForSteerRestart(resolved.entry.runId);
+
       // Force an immediate interruption and make steer the next run.
       if (targetSessionId) {
         abortEmbeddedPiRun(targetSessionId);
@@ -667,6 +683,11 @@ export const handleSubagentsCommand: CommandHandler = async (params, allowTextCo
     }
 
     if (steerRequested) {
+      replaceSubagentRunAfterSteer({
+        previousRunId: resolved.entry.runId,
+        nextRunId: runId,
+        fallback: resolved.entry,
+      });
       return {
         shouldContinue: false,
         reply: {

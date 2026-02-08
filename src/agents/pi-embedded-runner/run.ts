@@ -458,7 +458,8 @@ export async function runEmbeddedPiAgent(
             usageAccumulator,
             attempt.attemptUsage ?? normalizeUsage(lastAssistant?.usage as UsageLike),
           );
-          autoCompactionCount += Math.max(0, attempt.compactionCount ?? 0);
+          const attemptCompactionCount = Math.max(0, attempt.compactionCount ?? 0);
+          autoCompactionCount += attemptCompactionCount;
           const formattedAssistantErrorText = lastAssistant
             ? formatAssistantErrorText(lastAssistant, {
                 cfg: params.config,
@@ -498,9 +499,25 @@ export async function runEmbeddedPiAgent(
                 `compactionAttempts=${overflowCompactionAttempts} error=${errorText.slice(0, 200)}`,
             );
             const isCompactionFailure = isCompactionFailureError(errorText);
-            // Attempt auto-compaction on context overflow (not compaction_failure)
+            const hadAttemptLevelCompaction = attemptCompactionCount > 0;
+            // If this attempt already compacted (SDK auto-compaction), avoid immediately
+            // running another explicit compaction for the same overflow trigger.
             if (
               !isCompactionFailure &&
+              hadAttemptLevelCompaction &&
+              overflowCompactionAttempts < MAX_OVERFLOW_COMPACTION_ATTEMPTS
+            ) {
+              overflowCompactionAttempts++;
+              log.warn(
+                `context overflow persisted after in-attempt compaction (attempt ${overflowCompactionAttempts}/${MAX_OVERFLOW_COMPACTION_ATTEMPTS}); retrying prompt without additional compaction for ${provider}/${modelId}`,
+              );
+              continue;
+            }
+            // Attempt explicit overflow compaction only when this attempt did not
+            // already auto-compact.
+            if (
+              !isCompactionFailure &&
+              !hadAttemptLevelCompaction &&
               overflowCompactionAttempts < MAX_OVERFLOW_COMPACTION_ATTEMPTS
             ) {
               overflowCompactionAttempts++;

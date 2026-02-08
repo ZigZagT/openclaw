@@ -39,7 +39,27 @@ const processSchema = Type.Object({
   eof: Type.Optional(Type.Boolean({ description: "Close stdin after write" })),
   offset: Type.Optional(Type.Number({ description: "Log offset" })),
   limit: Type.Optional(Type.Number({ description: "Log length" })),
+  timeout: Type.Optional(
+    Type.Number({
+      description: "For poll: wait up to this many milliseconds before returning",
+    }),
+  ),
 });
+
+const MAX_POLL_WAIT_MS = 120_000;
+
+function resolvePollWaitMs(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.min(MAX_POLL_WAIT_MS, Math.floor(value)));
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value.trim(), 10);
+    if (Number.isFinite(parsed)) {
+      return Math.max(0, Math.min(MAX_POLL_WAIT_MS, parsed));
+    }
+  }
+  return 0;
+}
 
 export function createProcessTool(
   defaults?: ProcessToolDefaults,
@@ -81,6 +101,7 @@ export function createProcessTool(
         eof?: boolean;
         offset?: number;
         limit?: number;
+        timeout?: number | string;
       };
 
       if (params.action === "list") {
@@ -192,6 +213,15 @@ export function createProcessTool(
               ],
               details: { status: "failed" },
             };
+          }
+          const pollWaitMs = resolvePollWaitMs(params.timeout);
+          if (pollWaitMs > 0 && !scopedSession.exited) {
+            const deadline = Date.now() + pollWaitMs;
+            while (!scopedSession.exited && Date.now() < deadline) {
+              await new Promise((resolve) =>
+                setTimeout(resolve, Math.min(250, deadline - Date.now())),
+              );
+            }
           }
           const { stdout, stderr } = drainSession(scopedSession);
           const exited = scopedSession.exited;

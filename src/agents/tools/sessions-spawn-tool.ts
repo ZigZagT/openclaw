@@ -181,7 +181,8 @@ export function createSessionsSpawnTool(opts?: {
       const resolvedModel =
         normalizeModelSelection(modelOverride) ??
         normalizeModelSelection(targetAgentConfig?.subagents?.model) ??
-        normalizeModelSelection(cfg.agents?.defaults?.subagents?.model);
+        normalizeModelSelection(cfg.agents?.defaults?.subagents?.model) ??
+        normalizeModelSelection(cfg.agents?.defaults?.model?.primary);
 
       const resolvedThinkingDefaultRaw =
         readStringParam(targetAgentConfig?.subagents ?? {}, "thinking") ??

@@ -138,37 +138,4 @@ describe("openclaw-tools: subagents", () => {
     );
     expect(calls.some((call) => call.method === "agent")).toBe(true);
   });
-  it("sessions_spawn supports legacy timeoutSeconds alias", async () => {
-    resetSubagentRegistryForTests();
-    callGatewayMock.mockReset();
-    let spawnedTimeout: number | undefined;
-
-    callGatewayMock.mockImplementation(async (opts: unknown) => {
-      const request = opts as { method?: string; params?: unknown };
-      if (request.method === "agent") {
-        const params = request.params as { timeout?: number } | undefined;
-        spawnedTimeout = params?.timeout;
-        return { runId: "run-1", status: "accepted", acceptedAt: 1000 };
-      }
-      return {};
-    });
-
-    const tool = createOpenClawTools({
-      agentSessionKey: "main",
-      agentChannel: "whatsapp",
-    }).find((candidate) => candidate.name === "sessions_spawn");
-    if (!tool) {
-      throw new Error("missing sessions_spawn tool");
-    }
-
-    const result = await tool.execute("call5", {
-      task: "do thing",
-      timeoutSeconds: 2,
-    });
-    expect(result.details).toMatchObject({
-      status: "accepted",
-      runId: "run-1",
-    });
-    expect(spawnedTimeout).toBe(2);
-  });
 });

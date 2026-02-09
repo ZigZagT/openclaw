@@ -75,7 +75,7 @@ describe("getSubagentDepthFromSessionStore", () => {
     expect(depth).toBe(2);
   });
 
-  it("falls back to session-key segment counting for backwards compatibility", () => {
+  it("falls back to session-key segment counting when metadata is missing", () => {
     const key = "agent:main:subagent:flat";
     const depth = getSubagentDepthFromSessionStore(key, {
       store: {

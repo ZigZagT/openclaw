@@ -4,6 +4,7 @@ import type { CommandHandler } from "./commands-types.js";
 import { AGENT_LANE_SUBAGENT } from "../../agents/lanes.js";
 import { abortEmbeddedPiRun } from "../../agents/pi-embedded.js";
 import {
+  clearSubagentRunSteerRestart,
   listSubagentRunsForRequester,
   markSubagentRunTerminated,
   markSubagentRunForSteerRestart,
@@ -41,7 +42,7 @@ const COMMAND = "/subagents";
 const COMMAND_KILL = "/kill";
 const COMMAND_STEER = "/steer";
 const COMMAND_TELL = "/tell";
-const ACTIONS = new Set(["list", "stop", "kill", "log", "send", "steer", "info", "help"]);
+const ACTIONS = new Set(["list", "kill", "log", "send", "steer", "info", "help"]);
 const RECENT_WINDOW_MINUTES = 30;
 const SUBAGENT_TASK_PREVIEW_MAX = 110;
 const STEER_ABORT_SETTLE_TIMEOUT_MS = 5_000;
@@ -280,7 +281,6 @@ function buildSubagentsHelp() {
     "Subagents",
     "Usage:",
     "- /subagents list",
-    "- /subagents stop <id|#|all>",
     "- /subagents kill <id|#|all>",
     "- /subagents log <id|#> [limit] [tools]",
     "- /subagents info <id|#>",
@@ -395,7 +395,6 @@ export const handleSubagentsCommand: CommandHandler = async (params, allowTextCo
   const rest = normalized.slice(handledPrefix.length).trim();
   const restTokens = rest.split(/\s+/).filter(Boolean);
   let action = "list";
-  let steerRequested = false;
   if (handledPrefix === COMMAND) {
     const [actionRaw] = restTokens;
     action = actionRaw?.toLowerCase() || "list";
@@ -407,13 +406,6 @@ export const handleSubagentsCommand: CommandHandler = async (params, allowTextCo
     action = "kill";
   } else {
     action = "steer";
-    steerRequested = true;
-  }
-  if (action === "kill") {
-    action = "stop";
-  } else if (action === "steer") {
-    action = "send";
-    steerRequested = true;
   }
 
   const requesterKey = resolveRequesterSessionKey(params);
@@ -484,7 +476,7 @@ export const handleSubagentsCommand: CommandHandler = async (params, allowTextCo
     return { shouldContinue: false, reply: { text: lines.join("\n") } };
   }
 
-  if (action === "stop") {
+  if (action === "kill") {
     const target = restTokens[0];
     if (!target) {
       return {
@@ -492,7 +484,7 @@ export const handleSubagentsCommand: CommandHandler = async (params, allowTextCo
         reply: {
           text:
             handledPrefix === COMMAND
-              ? "Usage: /subagents stop <id|#|all>"
+              ? "Usage: /subagents kill <id|#|all>"
               : "Usage: /kill <id|#|all>",
         },
       };
@@ -527,7 +519,7 @@ export const handleSubagentsCommand: CommandHandler = async (params, allowTextCo
     const cleared = clearSessionQueues([childKey, sessionId]);
     if (cleared.followupCleared > 0 || cleared.laneCleared > 0) {
       logVerbose(
-        `subagents stop: cleared followups=${cleared.followupCleared} lane=${cleared.laneCleared} keys=${cleared.keys.join(",")}`,
+        `subagents kill: cleared followups=${cleared.followupCleared} lane=${cleared.laneCleared} keys=${cleared.keys.join(",")}`,
       );
     }
     if (entry) {
@@ -622,7 +614,8 @@ export const handleSubagentsCommand: CommandHandler = async (params, allowTextCo
     return { shouldContinue: false, reply: { text: [header, ...lines].join("\n") } };
   }
 
-  if (action === "send") {
+  if (action === "send" || action === "steer") {
+    const steerRequested = action === "steer";
     const target = restTokens[0];
     const message = restTokens.slice(1).join(" ").trim();
     if (!target || !message) {
@@ -712,6 +705,11 @@ export const handleSubagentsCommand: CommandHandler = async (params, allowTextCo
         runId = responseRunId;
       }
     } catch (err) {
+      if (steerRequested) {
+        // Replacement launch failed; restore announce behavior for the
+        // original run so completion is not silently suppressed.
+        clearSubagentRunSteerRestart(resolved.entry.runId);
+      }
       const messageText =
         err instanceof Error ? err.message : typeof err === "string" ? err : "error";
       return { shouldContinue: false, reply: { text: `send failed: ${messageText}` } };

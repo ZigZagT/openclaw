@@ -255,9 +255,9 @@ function buildChatCommands(): ChatCommandDefinition[] {
       args: [
         {
           name: "action",
-          description: "list | stop | kill | log | info | send | steer",
+          description: "list | kill | log | info | send | steer",
           type: "string",
-          choices: ["list", "stop", "kill", "log", "info", "send", "steer"],
+          choices: ["list", "kill", "log", "info", "send", "steer"],
         },
         {
           name: "target",

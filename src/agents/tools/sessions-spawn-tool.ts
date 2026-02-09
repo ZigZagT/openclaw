@@ -28,8 +28,6 @@ const SessionsSpawnToolSchema = Type.Object({
   model: Type.Optional(Type.String()),
   thinking: Type.Optional(Type.String()),
   runTimeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
-  // Back-compat alias. Prefer runTimeoutSeconds.
-  timeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
   cleanup: optionalStringEnum(["delete", "keep"] as const),
 });
 
@@ -97,24 +95,12 @@ export function createSessionsSpawnTool(opts?: {
         to: opts?.agentTo,
         threadId: opts?.agentThreadId,
       });
-      const runTimeoutSeconds = (() => {
-        const explicit =
-          typeof params.runTimeoutSeconds === "number" && Number.isFinite(params.runTimeoutSeconds)
-            ? Math.max(0, Math.floor(params.runTimeoutSeconds))
-            : undefined;
-        if (explicit !== undefined) {
-          return explicit;
-        }
-        const legacy =
-          typeof params.timeoutSeconds === "number" && Number.isFinite(params.timeoutSeconds)
-            ? Math.max(0, Math.floor(params.timeoutSeconds))
-            : undefined;
-        // Default to 0 (no timeout) when neither param is provided.
-        // Subagent spawns are long-running by design and should not inherit
-        // the 600 s agent-command default.  An explicit 0 from the caller
-        // has the same effect.
-        return legacy ?? 0;
-      })();
+      // Default to 0 (no timeout) when omitted. Sub-agent runs are long-lived
+      // by default and should not inherit the main agent 600s timeout.
+      const runTimeoutSeconds =
+        typeof params.runTimeoutSeconds === "number" && Number.isFinite(params.runTimeoutSeconds)
+          ? Math.max(0, Math.floor(params.runTimeoutSeconds))
+          : 0;
       let modelWarning: string | undefined;
       let modelApplied = false;
 
@@ -299,7 +285,7 @@ export function createSessionsSpawnTool(opts?: {
             lane: AGENT_LANE_SUBAGENT,
             extraSystemPrompt: childSystemPrompt,
             thinking: thinkingOverride,
-            timeout: runTimeoutSeconds != null ? runTimeoutSeconds : undefined,
+            timeout: runTimeoutSeconds,
             label: label || undefined,
             spawnedBy: spawnedByKey,
             groupId: opts?.agentGroupId ?? undefined,

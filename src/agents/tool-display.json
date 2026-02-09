@@ -267,8 +267,7 @@
         "model",
         "thinking",
         "runTimeoutSeconds",
-        "cleanup",
-        "timeoutSeconds"
+        "cleanup"
       ]
     },
     "subagents": {

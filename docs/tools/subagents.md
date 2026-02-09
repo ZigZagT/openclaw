@@ -15,7 +15,7 @@ Sub-agents are background agent runs spawned from an existing agent run. They ru
 Use `/subagents` to inspect or control sub-agent runs for the **current session**:
 
 - `/subagents list`
-- `/subagents stop <id|#|all>`
+- `/subagents kill <id|#|all>`
 - `/subagents log <id|#> [limit] [tools]`
 - `/subagents info <id|#>`
 - `/subagents send <id|#> <message>`
@@ -122,8 +122,8 @@ Each agent session (at any depth) can have at most `maxChildrenPerAgent` (defaul
 Stopping a depth-1 orchestrator automatically stops all its depth-2 children:
 
 - `/stop` in the main chat stops all depth-1 agents and cascades to their depth-2 children.
-- `/subagents stop <id>` stops a specific sub-agent and cascades to its children.
-- `/subagents stop all` stops all sub-agents for the requester and cascades.
+- `/subagents kill <id>` stops a specific sub-agent and cascades to its children.
+- `/subagents kill all` stops all sub-agents for the requester and cascades.
 
 ## Authentication
 
@@ -201,7 +201,7 @@ Sub-agents use a dedicated in-process queue lane:
 ## Stopping
 
 - Sending `/stop` in the requester chat aborts the requester session and stops any active sub-agent runs spawned from it, cascading to nested children.
-- `/subagents stop <id>` stops a specific sub-agent and cascades to its children.
+- `/subagents kill <id>` stops a specific sub-agent and cascades to its children.
 
 ## Limitations
 

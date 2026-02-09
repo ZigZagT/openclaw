@@ -109,7 +109,19 @@ export async function consumeRestartSentinel(
 }
 
 export function formatRestartSentinelMessage(payload: RestartSentinelPayload): string {
-  return `GatewayRestart:\n${JSON.stringify(payload, null, 2)}`;
+  const lines: string[] = [summarizeRestartSentinel(payload)];
+  const message = payload.message?.trim();
+  if (message) {
+    lines.push(message);
+  }
+  const reason = payload.stats?.reason?.trim();
+  if (reason) {
+    lines.push(`Reason: ${reason}`);
+  }
+  if (payload.doctorHint?.trim()) {
+    lines.push(payload.doctorHint.trim());
+  }
+  return lines.join("\n");
 }
 
 export function summarizeRestartSentinel(payload: RestartSentinelPayload): string {

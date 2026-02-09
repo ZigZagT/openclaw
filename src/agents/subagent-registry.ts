@@ -19,6 +19,7 @@ export type SubagentRunRecord = {
   cleanup: "delete" | "keep";
   label?: string;
   model?: string;
+  runTimeoutSeconds?: number;
   createdAt: number;
   startedAt?: number;
   endedAt?: number;
@@ -26,7 +27,7 @@ export type SubagentRunRecord = {
   archiveAtMs?: number;
   cleanupCompletedAt?: number;
   cleanupHandled?: boolean;
-  suppressAnnounceReason?: "steer-restart";
+  suppressAnnounceReason?: "steer-restart" | "killed";
 };
 
 const subagentRuns = new Map<string, SubagentRunRecord>();
@@ -108,7 +109,7 @@ function resumeSubagentRun(runId: string) {
 
   // Wait for completion again after restart.
   const cfg = loadConfig();
-  const waitTimeoutMs = resolveSubagentWaitTimeoutMs(cfg, undefined);
+  const waitTimeoutMs = resolveSubagentWaitTimeoutMs(cfg, entry.runTimeoutSeconds);
   void waitForSubagentCompletion(runId, waitTimeoutMs);
   resumedRuns.add(runId);
 }
@@ -159,7 +160,7 @@ function resolveSubagentWaitTimeoutMs(
   cfg: ReturnType<typeof loadConfig>,
   runTimeoutSeconds?: number,
 ) {
-  return resolveAgentTimeoutMs({ cfg, overrideSeconds: runTimeoutSeconds });
+  return resolveAgentTimeoutMs({ cfg, overrideSeconds: runTimeoutSeconds ?? 0 });
 }
 
 function startSweeper() {
@@ -351,7 +352,8 @@ export function replaceSubagentRunAfterSteer(params: {
   const cfg = loadConfig();
   const archiveAfterMs = resolveArchiveAfterMs(cfg);
   const archiveAtMs = archiveAfterMs ? now + archiveAfterMs : undefined;
-  const waitTimeoutMs = resolveSubagentWaitTimeoutMs(cfg, params.runTimeoutSeconds);
+  const runTimeoutSeconds = params.runTimeoutSeconds ?? source.runTimeoutSeconds ?? 0;
+  const waitTimeoutMs = resolveSubagentWaitTimeoutMs(cfg, runTimeoutSeconds);
 
   const next: SubagentRunRecord = {
     ...source,
@@ -363,6 +365,7 @@ export function replaceSubagentRunAfterSteer(params: {
     cleanupHandled: false,
     suppressAnnounceReason: undefined,
     archiveAtMs,
+    runTimeoutSeconds,
   };
 
   subagentRuns.set(nextRunId, next);
@@ -391,7 +394,8 @@ export function registerSubagentRun(params: {
   const cfg = loadConfig();
   const archiveAfterMs = resolveArchiveAfterMs(cfg);
   const archiveAtMs = archiveAfterMs ? now + archiveAfterMs : undefined;
-  const waitTimeoutMs = resolveSubagentWaitTimeoutMs(cfg, params.runTimeoutSeconds);
+  const runTimeoutSeconds = params.runTimeoutSeconds ?? 0;
+  const waitTimeoutMs = resolveSubagentWaitTimeoutMs(cfg, runTimeoutSeconds);
   const requesterOrigin = normalizeDeliveryContext(params.requesterOrigin);
   subagentRuns.set(params.runId, {
     runId: params.runId,
@@ -403,6 +407,7 @@ export function registerSubagentRun(params: {
     cleanup: params.cleanup,
     label: params.label,
     model: params.model,
+    runTimeoutSeconds,
     createdAt: now,
     startedAt: now,
     archiveAtMs,
@@ -515,6 +520,76 @@ export function releaseSubagentRun(runId: string) {
   if (subagentRuns.size === 0) {
     stopSweeper();
   }
+}
+
+function findRunIdsByChildSessionKey(childSessionKey: string): string[] {
+  const key = childSessionKey.trim();
+  if (!key) {
+    return [];
+  }
+  const runIds: string[] = [];
+  for (const [runId, entry] of subagentRuns.entries()) {
+    if (entry.childSessionKey === key) {
+      runIds.push(runId);
+    }
+  }
+  return runIds;
+}
+
+export function isSubagentSessionRunActive(childSessionKey: string): boolean {
+  const runIds = findRunIdsByChildSessionKey(childSessionKey);
+  for (const runId of runIds) {
+    const entry = subagentRuns.get(runId);
+    if (!entry) {
+      continue;
+    }
+    if (typeof entry.endedAt !== "number") {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function markSubagentRunTerminated(params: {
+  runId?: string;
+  childSessionKey?: string;
+  reason?: string;
+}): number {
+  const runIds = new Set<string>();
+  if (typeof params.runId === "string" && params.runId.trim()) {
+    runIds.add(params.runId.trim());
+  }
+  if (typeof params.childSessionKey === "string" && params.childSessionKey.trim()) {
+    for (const runId of findRunIdsByChildSessionKey(params.childSessionKey)) {
+      runIds.add(runId);
+    }
+  }
+  if (runIds.size === 0) {
+    return 0;
+  }
+
+  const now = Date.now();
+  const reason = params.reason?.trim() || "killed";
+  let updated = 0;
+  for (const runId of runIds) {
+    const entry = subagentRuns.get(runId);
+    if (!entry) {
+      continue;
+    }
+    if (typeof entry.endedAt === "number") {
+      continue;
+    }
+    entry.endedAt = now;
+    entry.outcome = { status: "error", error: reason };
+    entry.cleanupHandled = true;
+    entry.cleanupCompletedAt = now;
+    entry.suppressAnnounceReason = "killed";
+    updated += 1;
+  }
+  if (updated > 0) {
+    persistSubagentRuns();
+  }
+  return updated;
 }
 
 export function listSubagentRunsForRequester(requesterSessionKey: string): SubagentRunRecord[] {

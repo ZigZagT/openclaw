@@ -286,4 +286,88 @@ describe("abort detection", () => {
     expect(commandQueueMocks.clearCommandLane).toHaveBeenCalledWith(`session:${depth1Key}`);
     expect(commandQueueMocks.clearCommandLane).toHaveBeenCalledWith(`session:${depth2Key}`);
   });
+
+  it("cascade stop traverses ended depth-1 parents to stop active depth-2 children", async () => {
+    subagentRegistryMocks.listSubagentRunsForRequester.mockReset();
+    subagentRegistryMocks.markSubagentRunTerminated.mockClear();
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-abort-"));
+    const storePath = path.join(root, "sessions.json");
+    const cfg = { session: { store: storePath } } as OpenClawConfig;
+    const sessionKey = "telegram:parent";
+    const depth1Key = "agent:main:subagent:child-ended";
+    const depth2Key = "agent:main:subagent:child-ended:subagent:grandchild-active";
+    const now = Date.now();
+    await fs.writeFile(
+      storePath,
+      JSON.stringify(
+        {
+          [sessionKey]: {
+            sessionId: "session-parent",
+            updatedAt: now,
+          },
+          [depth1Key]: {
+            sessionId: "session-child-ended",
+            updatedAt: now,
+          },
+          [depth2Key]: {
+            sessionId: "session-grandchild-active",
+            updatedAt: now,
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    // main -> ended depth-1 parent
+    // depth-1 parent -> active depth-2 child
+    // depth-2 child -> none
+    subagentRegistryMocks.listSubagentRunsForRequester
+      .mockReturnValueOnce([
+        {
+          runId: "run-1",
+          childSessionKey: depth1Key,
+          requesterSessionKey: sessionKey,
+          requesterDisplayKey: "telegram:parent",
+          task: "orchestrator",
+          cleanup: "keep",
+          createdAt: now - 1_000,
+          endedAt: now - 500,
+          outcome: { status: "ok" },
+        },
+      ])
+      .mockReturnValueOnce([
+        {
+          runId: "run-2",
+          childSessionKey: depth2Key,
+          requesterSessionKey: depth1Key,
+          requesterDisplayKey: depth1Key,
+          task: "leaf worker",
+          cleanup: "keep",
+          createdAt: now - 500,
+        },
+      ])
+      .mockReturnValueOnce([]);
+
+    const result = await tryFastAbortFromMessage({
+      ctx: buildTestCtx({
+        CommandBody: "/stop",
+        RawBody: "/stop",
+        CommandAuthorized: true,
+        SessionKey: sessionKey,
+        Provider: "telegram",
+        Surface: "telegram",
+        From: "telegram:parent",
+        To: "telegram:parent",
+      }),
+      cfg,
+    });
+
+    // Should skip killing the ended depth-1 run itself, but still kill depth-2.
+    expect(result.stoppedSubagents).toBe(1);
+    expect(commandQueueMocks.clearCommandLane).toHaveBeenCalledWith(`session:${depth2Key}`);
+    expect(subagentRegistryMocks.markSubagentRunTerminated).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: "run-2", childSessionKey: depth2Key }),
+    );
+  });
 });

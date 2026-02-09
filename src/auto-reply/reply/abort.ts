@@ -103,35 +103,34 @@ export function stopSubagentsForRequester(params: {
   let stopped = 0;
 
   for (const run of runs) {
-    if (run.endedAt) {
-      continue;
-    }
     const childKey = run.childSessionKey?.trim();
     if (!childKey || seenChildKeys.has(childKey)) {
       continue;
     }
     seenChildKeys.add(childKey);
 
-    const cleared = clearSessionQueues([childKey]);
-    const parsed = parseAgentSessionKey(childKey);
-    const storePath = resolveStorePath(params.cfg.session?.store, { agentId: parsed?.agentId });
-    let store = storeCache.get(storePath);
-    if (!store) {
-      store = loadSessionStore(storePath);
-      storeCache.set(storePath, store);
-    }
-    const entry = store[childKey];
-    const sessionId = entry?.sessionId;
-    const aborted = sessionId ? abortEmbeddedPiRun(sessionId) : false;
-    const markedTerminated =
-      markSubagentRunTerminated({
-        runId: run.runId,
-        childSessionKey: childKey,
-        reason: "killed",
-      }) > 0;
+    if (!run.endedAt) {
+      const cleared = clearSessionQueues([childKey]);
+      const parsed = parseAgentSessionKey(childKey);
+      const storePath = resolveStorePath(params.cfg.session?.store, { agentId: parsed?.agentId });
+      let store = storeCache.get(storePath);
+      if (!store) {
+        store = loadSessionStore(storePath);
+        storeCache.set(storePath, store);
+      }
+      const entry = store[childKey];
+      const sessionId = entry?.sessionId;
+      const aborted = sessionId ? abortEmbeddedPiRun(sessionId) : false;
+      const markedTerminated =
+        markSubagentRunTerminated({
+          runId: run.runId,
+          childSessionKey: childKey,
+          reason: "killed",
+        }) > 0;
 
-    if (markedTerminated || aborted || cleared.followupCleared > 0 || cleared.laneCleared > 0) {
-      stopped += 1;
+      if (markedTerminated || aborted || cleared.followupCleared > 0 || cleared.laneCleared > 0) {
+        stopped += 1;
+      }
     }
 
     // Cascade: also stop any sub-sub-agents spawned by this child.

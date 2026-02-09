@@ -106,12 +106,15 @@ describe("subagent announce formatting", () => {
     const msg = call?.params?.message as string;
     expect(call?.params?.sessionKey).toBe("agent:main:main");
     expect(msg).toContain("[System Message]");
+    expect(msg).toContain("[id: run-123]");
     expect(msg).toContain("subagent task");
     expect(msg).toContain("failed");
     expect(msg).toContain("boom");
-    expect(msg).toContain("Findings:");
+    expect(msg).toContain("Result:");
     expect(msg).toContain("raw subagent reply");
     expect(msg).toContain("Stats:");
+    expect(msg).toContain("35 words max");
+    expect(msg).toContain("keep this internal context private");
   });
 
   it("includes success status when outcome is ok", async () => {
@@ -136,7 +139,7 @@ describe("subagent announce formatting", () => {
     expect(msg).toContain("completed successfully");
   });
 
-  it("formats stats usage without redundant io label and shows prompt/cache separately", async () => {
+  it("trims long findings and includes compact stats", async () => {
     const { runSubagentAnnounceFlow } = await import("./subagent-announce.js");
     sessionStore = {
       "agent:main:subagent:test": {
@@ -146,6 +149,9 @@ describe("subagent announce formatting", () => {
         totalTokens: 197000,
       },
     };
+    readLatestAssistantReplyMock.mockResolvedValue(
+      Array.from({ length: 140 }, (_, index) => `step-${index}`).join(" "),
+    );
 
     await runSubagentAnnounceFlow({
       childSessionKey: "agent:main:subagent:test",
@@ -163,9 +169,15 @@ describe("subagent announce formatting", () => {
 
     const call = agentSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
     const msg = call?.params?.message as string;
+    expect(msg).toContain("Result:");
+    expect(msg).toContain("Stats:");
     expect(msg).toContain("tokens 1.0k (in 12 / out 1.0k)");
     expect(msg).toContain("prompt/cache 197.0k");
-    expect(msg).not.toContain("tokens 1.0k io");
+    expect(msg).toContain("[id: child-session-usage]");
+    expect(msg).toContain("35 words max");
+    expect(msg).toContain("ONLY: NO_REPLY");
+    expect(msg).toContain("step-0");
+    expect(msg).not.toContain("step-139");
   });
 
   it("steers announcements into an active run when queue mode is steer", async () => {

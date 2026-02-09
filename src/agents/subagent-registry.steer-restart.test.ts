@@ -86,6 +86,37 @@ describe("subagent registry steer restarts", () => {
     expect(announce.childRunId).toBe("run-new");
   });
 
+  it("restores announce for a finished run when steer replacement dispatch fails", async () => {
+    const mod = await import("./subagent-registry.js");
+
+    mod.registerSubagentRun({
+      runId: "run-failed-restart",
+      childSessionKey: "agent:main:subagent:failed-restart",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "initial task",
+      cleanup: "keep",
+    });
+
+    expect(mod.markSubagentRunForSteerRestart("run-failed-restart")).toBe(true);
+
+    lifecycleHandler?.({
+      stream: "lifecycle",
+      runId: "run-failed-restart",
+      data: { phase: "end" },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(announceSpy).not.toHaveBeenCalled();
+
+    expect(mod.clearSubagentRunSteerRestart("run-failed-restart")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(announceSpy).toHaveBeenCalledTimes(1);
+    const announce = announceSpy.mock.calls[0]?.[0] as { childRunId?: string };
+    expect(announce.childRunId).toBe("run-failed-restart");
+  });
+
   it("marks killed runs terminated and inactive", async () => {
     const mod = await import("./subagent-registry.js");
     const childSessionKey = "agent:main:subagent:killed";

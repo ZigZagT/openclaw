@@ -952,4 +952,56 @@ describe("sessions tools", () => {
     expect(details.text).toContain("killed");
     resetSubagentRegistryForTests();
   });
+
+  it("subagents kill-all cascades through ended parents to active descendants", async () => {
+    resetSubagentRegistryForTests();
+    callGatewayMock.mockReset();
+    const now = Date.now();
+    const endedParentKey = "agent:main:subagent:parent-ended";
+    const activeChildKey = "agent:main:subagent:parent-ended:subagent:worker";
+    addSubagentRunForTests({
+      runId: "run-parent-ended",
+      childSessionKey: endedParentKey,
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "orchestrator",
+      cleanup: "keep",
+      createdAt: now - 120_000,
+      startedAt: now - 120_000,
+      endedAt: now - 60_000,
+      outcome: { status: "ok" },
+    });
+    addSubagentRunForTests({
+      runId: "run-worker-active",
+      childSessionKey: activeChildKey,
+      requesterSessionKey: endedParentKey,
+      requesterDisplayKey: endedParentKey,
+      task: "leaf worker",
+      cleanup: "keep",
+      createdAt: now - 30_000,
+      startedAt: now - 30_000,
+    });
+
+    const tool = createOpenClawTools({
+      agentSessionKey: "agent:main:main",
+    }).find((candidate) => candidate.name === "subagents");
+    expect(tool).toBeDefined();
+    if (!tool) {
+      throw new Error("missing subagents tool");
+    }
+
+    const result = await tool.execute("call-subagents-kill-all-cascade-ended", {
+      action: "kill",
+      target: "all",
+    });
+    const details = result.details as { status?: string; killed?: number; text?: string };
+    expect(details.status).toBe("ok");
+    expect(details.killed).toBe(1);
+    expect(details.text).toContain("killed 1 subagent");
+
+    const descendants = listSubagentRunsForRequester(endedParentKey);
+    const worker = descendants.find((entry) => entry.runId === "run-worker-active");
+    expect(worker?.endedAt).toBeTypeOf("number");
+    resetSubagentRegistryForTests();
+  });
 });

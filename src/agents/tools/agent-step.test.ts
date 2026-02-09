@@ -33,7 +33,7 @@ describe("readLatestAssistantReply", () => {
     });
   });
 
-  it("does not fall back to older assistant text when latest assistant has no text", async () => {
+  it("falls back to older assistant text when latest assistant has no text", async () => {
     callGatewayMock.mockResolvedValue({
       messages: [
         { role: "assistant", content: [{ type: "text", text: "older output" }] },
@@ -44,6 +44,6 @@ describe("readLatestAssistantReply", () => {
 
     const result = await readLatestAssistantReply({ sessionKey: "agent:main:child" });
 
-    expect(result).toBeUndefined();
+    expect(result).toBe("older output");
   });
 });

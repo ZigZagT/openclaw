@@ -52,18 +52,6 @@ function suppressAnnounceForSteerRestart(entry?: SubagentRunRecord) {
   return entry?.suppressAnnounceReason === "steer-restart";
 }
 
-function removeSuppressedRun(runId: string) {
-  const didDelete = subagentRuns.delete(runId);
-  if (!didDelete) {
-    return;
-  }
-  resumedRuns.delete(runId);
-  persistSubagentRuns();
-  if (subagentRuns.size === 0) {
-    stopSweeper();
-  }
-}
-
 function resumeSubagentRun(runId: string) {
   if (!runId || resumedRuns.has(runId)) {
     return;
@@ -78,7 +66,6 @@ function resumeSubagentRun(runId: string) {
 
   if (typeof entry.endedAt === "number" && entry.endedAt > 0) {
     if (suppressAnnounceForSteerRestart(entry)) {
-      removeSuppressedRun(runId);
       resumedRuns.add(runId);
       return;
     }
@@ -244,7 +231,6 @@ function ensureListener() {
     persistSubagentRuns();
 
     if (suppressAnnounceForSteerRestart(entry)) {
-      removeSuppressedRun(evt.runId);
       return;
     }
 
@@ -339,6 +325,12 @@ export function clearSubagentRunSteerRestart(runId: string) {
   }
   entry.suppressAnnounceReason = undefined;
   persistSubagentRuns();
+  // If the interrupted run already finished while suppression was active, retry
+  // cleanup now so completion output is not lost when restart dispatch fails.
+  resumedRuns.delete(key);
+  if (typeof entry.endedAt === "number" && !entry.cleanupCompletedAt) {
+    resumeSubagentRun(key);
+  }
   return true;
 }
 
@@ -484,7 +476,6 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
       persistSubagentRuns();
     }
     if (suppressAnnounceForSteerRestart(entry)) {
-      removeSuppressedRun(runId);
       return;
     }
     if (!beginSubagentCleanup(runId)) {

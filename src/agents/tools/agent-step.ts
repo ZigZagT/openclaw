@@ -21,7 +21,11 @@ export async function readLatestAssistantReply(params: {
     if ((candidate as { role?: unknown }).role !== "assistant") {
       continue;
     }
-    return extractAssistantText(candidate);
+    const text = extractAssistantText(candidate);
+    if (!text?.trim()) {
+      continue;
+    }
+    return text;
   }
   return undefined;
 }

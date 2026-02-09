@@ -1,5 +1,4 @@
 import crypto from "node:crypto";
-import path from "node:path";
 import { resolveQueueSettings } from "../auto-reply/reply/queue.js";
 import { loadConfig } from "../config/config.js";
 import {
@@ -9,7 +8,6 @@ import {
   resolveStorePath,
 } from "../config/sessions.js";
 import { callGateway } from "../gateway/call.js";
-import { formatDurationCompact } from "../infra/format-time/format-duration.ts";
 import { normalizeMainKey } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import {
@@ -27,8 +25,28 @@ import { type AnnounceQueueItem, enqueueAnnounce } from "./subagent-announce-que
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
 import { readLatestAssistantReply } from "./tools/agent-step.js";
 
+const MAX_ANNOUNCE_FINDINGS_CHARS = 420;
+const MAX_ANNOUNCE_SUMMARY_WORDS = 35;
+
+function formatDurationShort(valueMs?: number) {
+  if (!valueMs || !Number.isFinite(valueMs) || valueMs <= 0) {
+    return "n/a";
+  }
+  const totalSeconds = Math.round(valueMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}h${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
 function formatTokenCount(value?: number) {
-  if (!value || !Number.isFinite(value)) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return "0";
   }
   if (value >= 1_000_000) {
@@ -40,88 +58,52 @@ function formatTokenCount(value?: number) {
   return String(Math.round(value));
 }
 
-function formatSubagentUsage(parts: { total?: number; input?: number; output?: number }) {
-  const input = typeof parts.input === "number" && Number.isFinite(parts.input) ? parts.input : 0;
-  const output =
-    typeof parts.output === "number" && Number.isFinite(parts.output) ? parts.output : 0;
-  const ioTotal = input + output;
-  const promptCache =
-    typeof parts.total === "number" && Number.isFinite(parts.total) ? parts.total : undefined;
-
-  if (ioTotal > 0) {
-    const inputText = formatTokenCount(input);
-    const outputText = formatTokenCount(output);
-    const usageBits = [`tokens ${formatTokenCount(ioTotal)} (in ${inputText} / out ${outputText})`];
-    if (typeof promptCache === "number" && promptCache > ioTotal) {
-      usageBits.push(`prompt/cache ${formatTokenCount(promptCache)}`);
-    }
-    return usageBits.join(" • ");
+function compactAnnounceFindings(reply?: string) {
+  const text = (reply?.trim() ? reply : "(no output)").replace(/\s+/g, " ").trim();
+  if (text.length <= MAX_ANNOUNCE_FINDINGS_CHARS) {
+    return text;
   }
-  if (typeof promptCache === "number" && promptCache > 0) {
-    return `tokens ${formatTokenCount(promptCache)} prompt/cache`;
-  }
-  return "tokens n/a";
+  return `${text.slice(0, MAX_ANNOUNCE_FINDINGS_CHARS).trimEnd()}...`;
 }
 
-function formatUsd(value?: number) {
-  if (value === undefined || !Number.isFinite(value)) {
-    return undefined;
-  }
-  if (value >= 1) {
-    return `$${value.toFixed(2)}`;
-  }
-  if (value >= 0.01) {
-    return `$${value.toFixed(2)}`;
-  }
-  return `$${value.toFixed(4)}`;
-}
-
-function resolveModelCost(params: {
-  provider?: string;
-  model?: string;
-  config: ReturnType<typeof loadConfig>;
-}):
-  | {
-      input: number;
-      output: number;
-      cacheRead: number;
-      cacheWrite: number;
-    }
-  | undefined {
-  const provider = params.provider?.trim();
-  const model = params.model?.trim();
-  if (!provider || !model) {
-    return undefined;
-  }
-  const models = params.config.models?.providers?.[provider]?.models ?? [];
-  const entry = models.find((candidate) => candidate.id === model);
-  return entry?.cost;
-}
-
-async function waitForSessionUsage(params: { sessionKey: string }) {
+async function buildCompactAnnounceStatsLine(params: {
+  sessionKey: string;
+  startedAt?: number;
+  endedAt?: number;
+}) {
   const cfg = loadConfig();
   const agentId = resolveAgentIdFromSessionKey(params.sessionKey);
   const storePath = resolveStorePath(cfg.session?.store, { agentId });
   let entry = loadSessionStore(storePath)[params.sessionKey];
-  if (!entry) {
-    return { entry, storePath };
-  }
-  const hasTokens = () =>
-    entry &&
-    (typeof entry.totalTokens === "number" ||
-      typeof entry.inputTokens === "number" ||
-      typeof entry.outputTokens === "number");
-  if (hasTokens()) {
-    return { entry, storePath };
-  }
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    entry = loadSessionStore(storePath)[params.sessionKey];
-    if (hasTokens()) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const hasTokenData =
+      typeof entry?.inputTokens === "number" ||
+      typeof entry?.outputTokens === "number" ||
+      typeof entry?.totalTokens === "number";
+    if (hasTokenData) {
       break;
     }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    entry = loadSessionStore(storePath)[params.sessionKey];
   }
-  return { entry, storePath };
+
+  const input = typeof entry?.inputTokens === "number" ? entry.inputTokens : 0;
+  const output = typeof entry?.outputTokens === "number" ? entry.outputTokens : 0;
+  const ioTotal = input + output;
+  const promptCache = typeof entry?.totalTokens === "number" ? entry.totalTokens : undefined;
+  const runtimeMs =
+    typeof params.startedAt === "number" && typeof params.endedAt === "number"
+      ? Math.max(0, params.endedAt - params.startedAt)
+      : undefined;
+
+  const parts = [
+    `runtime ${formatDurationShort(runtimeMs)}`,
+    `tokens ${formatTokenCount(ioTotal)} (in ${formatTokenCount(input)} / out ${formatTokenCount(output)})`,
+  ];
+  if (typeof promptCache === "number" && promptCache > ioTotal) {
+    parts.push(`prompt/cache ${formatTokenCount(promptCache)}`);
+  }
+  return `Stats: ${parts.join(" • ")}`;
 }
 
 type DeliveryContextSource = Parameters<typeof deliveryContextFromSession>[0];
@@ -241,57 +223,6 @@ async function maybeQueueSubagentAnnounce(params: {
   }
 
   return "none";
-}
-
-async function buildSubagentStatsLine(params: {
-  sessionKey: string;
-  startedAt?: number;
-  endedAt?: number;
-}) {
-  const cfg = loadConfig();
-  const { entry, storePath } = await waitForSessionUsage({
-    sessionKey: params.sessionKey,
-  });
-
-  const sessionId = entry?.sessionId;
-  const transcriptPath =
-    sessionId && storePath ? path.join(path.dirname(storePath), `${sessionId}.jsonl`) : undefined;
-
-  const input = entry?.inputTokens;
-  const output = entry?.outputTokens;
-  const total =
-    entry?.totalTokens ??
-    (typeof input === "number" && typeof output === "number" ? input + output : undefined);
-  const runtimeMs =
-    typeof params.startedAt === "number" && typeof params.endedAt === "number"
-      ? Math.max(0, params.endedAt - params.startedAt)
-      : undefined;
-
-  const provider = entry?.modelProvider;
-  const model = entry?.model;
-  const costConfig = resolveModelCost({ provider, model, config: cfg });
-  const cost =
-    costConfig && typeof input === "number" && typeof output === "number"
-      ? (input * costConfig.input + output * costConfig.output) / 1_000_000
-      : undefined;
-
-  const parts: string[] = [];
-  const runtime = formatDurationCompact(runtimeMs);
-  parts.push(`runtime ${runtime ?? "n/a"}`);
-  parts.push(formatSubagentUsage({ total, input, output }));
-  const costText = formatUsd(cost);
-  if (costText) {
-    parts.push(`est ${costText}`);
-  }
-  parts.push(`sessionKey ${params.sessionKey}`);
-  if (sessionId) {
-    parts.push(`sessionId ${sessionId}`);
-  }
-  if (transcriptPath) {
-    parts.push(`transcript ${transcriptPath}`);
-  }
-
-  return `Stats: ${parts.join(" \u2022 ")}`;
 }
 
 function loadSessionEntryByKey(sessionKey: string) {
@@ -517,13 +448,6 @@ export async function runSubagentAnnounceFlow(params: {
       outcome = { status: "unknown" };
     }
 
-    // Build stats
-    const statsLine = await buildSubagentStatsLine({
-      sessionKey: params.childSessionKey,
-      startedAt: params.startedAt,
-      endedAt: params.endedAt,
-    });
-
     // Build status label
     const statusLabel =
       outcome.status === "ok"
@@ -537,19 +461,22 @@ export async function runSubagentAnnounceFlow(params: {
     // Build instructional message for main agent
     const announceType = params.announceType ?? "subagent task";
     const taskLabel = params.label || params.task || "task";
+    const announceId = childSessionId || params.childRunId;
+    const conciseFindings = compactAnnounceFindings(reply);
+    const statsLine = await buildCompactAnnounceStatsLine({
+      sessionKey: params.childSessionKey,
+      startedAt: params.startedAt,
+      endedAt: params.endedAt,
+    });
     const triggerMessage = [
-      `[System Message] A ${announceType} "${taskLabel}" just ${statusLabel}.`,
+      `[System Message] [id: ${announceId}] A ${announceType} "${taskLabel}" just ${statusLabel}.`,
       "",
-      "Findings:",
-      reply || "(no output)",
+      "Result:",
+      conciseFindings,
       "",
       statsLine,
       "",
-      "This block is internal context and is not user-visible unless you explicitly share it.",
-      "Summarize this naturally for the user. Keep it brief (1-2 sentences). Flow it into the conversation naturally.",
-      "Do not say the user can see this block, logs, or output above unless you already sent that content to them.",
-      `Do not mention technical details like tokens, stats, or that this was a ${announceType}.`,
-      "You can respond with NO_REPLY if no announcement is needed (e.g., internal task with no user-facing result).",
+      `Reply with one short natural user update (${MAX_ANNOUNCE_SUMMARY_WORDS} words max); keep this internal context private (don't mention system/log/stats/session details or announce type). If no user-facing update is needed, reply ONLY: NO_REPLY.`,
     ].join("\n");
 
     const requesterDepth = getSubagentDepthFromSessionStore(params.requesterSessionKey);

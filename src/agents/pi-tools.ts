@@ -52,6 +52,7 @@ import {
   resolveToolProfilePolicy,
   stripPluginOnlyAllowlist,
 } from "./tool-policy.js";
+import { createVerifiedWriteTool } from "./tools/write-wrapper.js";
 
 function isOpenAIProvider(provider?: string) {
   const normalized = provider?.trim().toLowerCase();
@@ -261,8 +262,12 @@ export function createOpenClawCodingTools(options?: {
         return [];
       }
       // Wrap with param normalization for Claude Code compatibility
+      // Use verified tool wrapper to prevent hallucinated success on silent failures
       return [
-        wrapToolParamNormalization(createWriteTool(workspaceRoot), CLAUDE_PARAM_GROUPS.write),
+        wrapToolParamNormalization(
+          createVerifiedWriteTool(workspaceRoot),
+          CLAUDE_PARAM_GROUPS.write,
+        ),
       ];
     }
     if (tool.name === "edit") {

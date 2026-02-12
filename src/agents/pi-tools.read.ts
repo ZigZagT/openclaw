@@ -4,6 +4,7 @@ import type { AnyAgentTool } from "./pi-tools.types.js";
 import { detectMime } from "../media/mime.js";
 import { assertSandboxPath } from "./sandbox-paths.js";
 import { sanitizeToolResultImages } from "./tool-images.js";
+import { createVerifiedWriteTool } from "./tools/write-wrapper.js";
 
 // NOTE(steipete): Upstream read now does file-magic MIME detection; we keep the wrapper
 // to normalize payloads and sanitize oversized images before they hit providers.
@@ -274,7 +275,7 @@ export function createSandboxedReadTool(root: string) {
 }
 
 export function createSandboxedWriteTool(root: string) {
-  const base = createWriteTool(root) as unknown as AnyAgentTool;
+  const base = createVerifiedWriteTool(root) as unknown as AnyAgentTool;
   return wrapSandboxPathGuard(wrapToolParamNormalization(base, CLAUDE_PARAM_GROUPS.write), root);
 }
 

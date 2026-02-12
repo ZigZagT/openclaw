@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
 import type { RunEmbeddedPiAgentParams } from "./run/params.js";
 import type { EmbeddedPiAgentMeta, EmbeddedPiRunResult } from "./types.js";
+import { extractRetryAfterMs } from "../../pi-embedded-helpers/retry.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { isMarkdownCapableMessageChannel } from "../../utils/message-channel.js";
 import { resolveOpenClawAgentDir } from "../agent-paths.js";
@@ -50,6 +51,7 @@ import { compactEmbeddedPiSessionDirect } from "./compact.js";
 import { resolveGlobalLane, resolveSessionLane } from "./lanes.js";
 import { log } from "./logger.js";
 import { resolveModel } from "./model.js";
+import { logQuotaBreach } from "./quota-logger.js";
 import { runEmbeddedAttempt } from "./run/attempt.js";
 import { buildEmbeddedRunPayloads } from "./run/payloads.js";
 import {
@@ -333,7 +335,7 @@ export async function runEmbeddedPiAgent(
         let nextIndex = profileIndex + 1;
         while (nextIndex < profileCandidates.length) {
           const candidate = profileCandidates[nextIndex];
-          if (candidate && isProfileInCooldown(authStore, candidate)) {
+          if (candidate && isProfileInCooldown(authStore, candidate, modelId)) {
             nextIndex += 1;
             continue;
           }
@@ -359,7 +361,7 @@ export async function runEmbeddedPiAgent(
           if (
             candidate &&
             candidate !== lockedProfileId &&
-            isProfileInCooldown(authStore, candidate)
+            isProfileInCooldown(authStore, candidate, modelId)
           ) {
             profileIndex += 1;
             continue;
@@ -652,12 +654,18 @@ export async function runEmbeddedPiAgent(
             }
             const promptFailoverReason = classifyFailoverReason(errorText);
             if (promptFailoverReason && promptFailoverReason !== "timeout" && lastProfileId) {
+              const retryAfterMs = extractRetryAfterMs(promptError);
+              if (promptFailoverReason === "rate_limit") {
+                logQuotaBreach(promptError, provider, modelId);
+              }
               await markAuthProfileFailure({
                 store: authStore,
                 profileId: lastProfileId,
                 reason: promptFailoverReason,
                 cfg: params.config,
                 agentDir: params.agentDir,
+                modelId,
+                retryAfterMs,
               });
             }
             if (
@@ -746,6 +754,7 @@ export async function runEmbeddedPiAgent(
                 reason,
                 cfg: params.config,
                 agentDir: params.agentDir,
+                modelId,
               });
               if (timedOut && !isProbeSession) {
                 log.warn(
@@ -832,6 +841,7 @@ export async function runEmbeddedPiAgent(
               store: authStore,
               profileId: lastProfileId,
               agentDir: params.agentDir,
+              modelId,
             });
           }
           return {

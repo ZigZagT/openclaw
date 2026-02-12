@@ -40,6 +40,14 @@ export type AuthProfileFailureReason =
   | "timeout"
   | "unknown";
 
+/** Per-model usage statistics for fine-grained cooldown tracking */
+export type ModelUsageStats = {
+  lastUsed?: number;
+  cooldownUntil?: number;
+  errorCount?: number;
+  lastFailureAt?: number;
+};
+
 /** Per-profile usage statistics for round-robin and cooldown tracking */
 export type ProfileUsageStats = {
   lastUsed?: number;
@@ -49,6 +57,8 @@ export type ProfileUsageStats = {
   errorCount?: number;
   failureCounts?: Partial<Record<AuthProfileFailureReason, number>>;
   lastFailureAt?: number;
+  /** Per-model stats for fine-grained cooldowns (e.g., Opus overloaded but Haiku fine) */
+  modelStats?: Record<string, ModelUsageStats>;
 };
 
 export type AuthProfileStore = {

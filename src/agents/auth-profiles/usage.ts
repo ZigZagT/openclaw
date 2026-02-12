@@ -1,12 +1,22 @@
 import type { OpenClawConfig } from "../../config/config.js";
-import type { AuthProfileFailureReason, AuthProfileStore, ProfileUsageStats } from "./types.js";
+import type {
+  AuthProfileFailureReason,
+  AuthProfileStore,
+  ProfileUsageStats,
+  ModelUsageStats,
+} from "./types.js";
 import { normalizeProviderId } from "../model-selection.js";
 import { saveAuthProfileStore, updateAuthProfileStoreWithLock } from "./store.js";
 
-function resolveProfileUnusableUntil(stats: ProfileUsageStats): number | null {
+function resolveProfileUnusableUntil(stats: ProfileUsageStats, modelId?: string): number | null {
   const values = [stats.cooldownUntil, stats.disabledUntil]
     .filter((value): value is number => typeof value === "number")
     .filter((value) => Number.isFinite(value) && value > 0);
+
+  if (modelId && stats.modelStats?.[modelId]?.cooldownUntil) {
+    values.push(stats.modelStats[modelId].cooldownUntil);
+  }
+
   if (values.length === 0) {
     return null;
   }
@@ -16,12 +26,16 @@ function resolveProfileUnusableUntil(stats: ProfileUsageStats): number | null {
 /**
  * Check if a profile is currently in cooldown (due to rate limiting or errors).
  */
-export function isProfileInCooldown(store: AuthProfileStore, profileId: string): boolean {
+export function isProfileInCooldown(
+  store: AuthProfileStore,
+  profileId: string,
+  modelId?: string,
+): boolean {
   const stats = store.usageStats?.[profileId];
   if (!stats) {
     return false;
   }
-  const unusableUntil = resolveProfileUnusableUntil(stats);
+  const unusableUntil = resolveProfileUnusableUntil(stats, modelId);
   return unusableUntil ? Date.now() < unusableUntil : false;
 }
 
@@ -32,9 +46,10 @@ export function isProfileInCooldown(store: AuthProfileStore, profileId: string):
 export async function markAuthProfileUsed(params: {
   store: AuthProfileStore;
   profileId: string;
+  modelId?: string;
   agentDir?: string;
 }): Promise<void> {
-  const { store, profileId, agentDir } = params;
+  const { store, profileId, modelId, agentDir } = params;
   const updated = await updateAuthProfileStoreWithLock({
     agentDir,
     updater: (freshStore) => {
@@ -42,8 +57,10 @@ export async function markAuthProfileUsed(params: {
         return false;
       }
       freshStore.usageStats = freshStore.usageStats ?? {};
-      freshStore.usageStats[profileId] = {
-        ...freshStore.usageStats[profileId],
+      const existing = freshStore.usageStats[profileId] ?? {};
+
+      const newStats: ProfileUsageStats = {
+        ...existing,
         lastUsed: Date.now(),
         errorCount: 0,
         cooldownUntil: undefined,
@@ -51,6 +68,17 @@ export async function markAuthProfileUsed(params: {
         disabledReason: undefined,
         failureCounts: undefined,
       };
+
+      if (modelId) {
+        newStats.modelStats = newStats.modelStats ?? {};
+        newStats.modelStats[modelId] = {
+          lastUsed: Date.now(),
+          errorCount: 0,
+          cooldownUntil: undefined,
+        };
+      }
+
+      freshStore.usageStats[profileId] = newStats;
       return true;
     },
   });
@@ -63,8 +91,9 @@ export async function markAuthProfileUsed(params: {
   }
 
   store.usageStats = store.usageStats ?? {};
-  store.usageStats[profileId] = {
-    ...store.usageStats[profileId],
+  const existing = store.usageStats[profileId] ?? {};
+  const newStats: ProfileUsageStats = {
+    ...existing,
     lastUsed: Date.now(),
     errorCount: 0,
     cooldownUntil: undefined,
@@ -72,6 +101,16 @@ export async function markAuthProfileUsed(params: {
     disabledReason: undefined,
     failureCounts: undefined,
   };
+
+  if (modelId) {
+    newStats.modelStats = newStats.modelStats ?? {};
+    newStats.modelStats[modelId] = {
+      lastUsed: Date.now(),
+      errorCount: 0,
+      cooldownUntil: undefined,
+    };
+  }
+  store.usageStats[profileId] = newStats;
   saveAuthProfileStore(store, agentDir);
 }
 
@@ -149,12 +188,13 @@ function calculateAuthProfileBillingDisableMsWithConfig(params: {
 export function resolveProfileUnusableUntilForDisplay(
   store: AuthProfileStore,
   profileId: string,
+  modelId?: string,
 ): number | null {
   const stats = store.usageStats?.[profileId];
   if (!stats) {
     return null;
   }
-  return resolveProfileUnusableUntil(stats);
+  return resolveProfileUnusableUntil(stats, modelId);
 }
 
 function computeNextProfileUsageStats(params: {
@@ -162,6 +202,8 @@ function computeNextProfileUsageStats(params: {
   now: number;
   reason: AuthProfileFailureReason;
   cfgResolved: ResolvedAuthCooldownConfig;
+  modelId?: string;
+  retryAfterMs?: number;
 }): ProfileUsageStats {
   const windowMs = params.cfgResolved.failureWindowMs;
   const windowExpired =
@@ -169,30 +211,55 @@ function computeNextProfileUsageStats(params: {
     params.existing.lastFailureAt > 0 &&
     params.now - params.existing.lastFailureAt > windowMs;
 
-  const baseErrorCount = windowExpired ? 0 : (params.existing.errorCount ?? 0);
-  const nextErrorCount = baseErrorCount + 1;
-  const failureCounts = windowExpired ? {} : { ...params.existing.failureCounts };
-  failureCounts[params.reason] = (failureCounts[params.reason] ?? 0) + 1;
+  const updatedStats: ProfileUsageStats = { ...params.existing };
 
-  const updatedStats: ProfileUsageStats = {
-    ...params.existing,
-    errorCount: nextErrorCount,
-    failureCounts,
-    lastFailureAt: params.now,
-  };
-
+  // Billing failure is always profile-wide
   if (params.reason === "billing") {
+    const failureCounts = windowExpired ? {} : { ...params.existing.failureCounts };
+    failureCounts[params.reason] = (failureCounts[params.reason] ?? 0) + 1;
     const billingCount = failureCounts.billing ?? 1;
+
     const backoffMs = calculateAuthProfileBillingDisableMsWithConfig({
       errorCount: billingCount,
       baseMs: params.cfgResolved.billingBackoffMs,
       maxMs: params.cfgResolved.billingMaxMs,
     });
+
     updatedStats.disabledUntil = params.now + backoffMs;
     updatedStats.disabledReason = "billing";
+    updatedStats.failureCounts = failureCounts;
+    updatedStats.lastFailureAt = params.now;
+    return updatedStats;
+  }
+
+  // Handle per-model vs profile-wide cooldowns
+  const isModelSpecific =
+    !!params.modelId && (params.reason === "rate_limit" || params.reason === "timeout");
+
+  if (isModelSpecific && params.modelId) {
+    // Model-specific cooldown
+    updatedStats.modelStats = updatedStats.modelStats ?? {};
+    const modelStats = updatedStats.modelStats[params.modelId] ?? {};
+    const modelErrorCount = (modelStats.errorCount ?? 0) + 1;
+
+    const backoffMs = params.retryAfterMs ?? calculateAuthProfileCooldownMs(modelErrorCount);
+
+    updatedStats.modelStats[params.modelId] = {
+      ...modelStats,
+      errorCount: modelErrorCount,
+      cooldownUntil: params.now + backoffMs,
+      lastFailureAt: params.now,
+    };
   } else {
-    const backoffMs = calculateAuthProfileCooldownMs(nextErrorCount);
+    // Fallback to profile-wide cooldown
+    const baseErrorCount = windowExpired ? 0 : (params.existing.errorCount ?? 0);
+    const nextErrorCount = baseErrorCount + 1;
+
+    const backoffMs = params.retryAfterMs ?? calculateAuthProfileCooldownMs(nextErrorCount);
+
+    updatedStats.errorCount = nextErrorCount;
     updatedStats.cooldownUntil = params.now + backoffMs;
+    updatedStats.lastFailureAt = params.now;
   }
 
   return updatedStats;
@@ -208,8 +275,10 @@ export async function markAuthProfileFailure(params: {
   reason: AuthProfileFailureReason;
   cfg?: OpenClawConfig;
   agentDir?: string;
+  modelId?: string;
+  retryAfterMs?: number;
 }): Promise<void> {
-  const { store, profileId, reason, agentDir, cfg } = params;
+  const { store, profileId, reason, agentDir, cfg, modelId, retryAfterMs } = params;
   const updated = await updateAuthProfileStoreWithLock({
     agentDir,
     updater: (freshStore) => {
@@ -232,6 +301,8 @@ export async function markAuthProfileFailure(params: {
         now,
         reason,
         cfgResolved,
+        modelId,
+        retryAfterMs,
       });
       return true;
     },
@@ -258,6 +329,8 @@ export async function markAuthProfileFailure(params: {
     now,
     reason,
     cfgResolved,
+    modelId,
+    retryAfterMs,
   });
   saveAuthProfileStore(store, agentDir);
 }
@@ -271,12 +344,16 @@ export async function markAuthProfileCooldown(params: {
   store: AuthProfileStore;
   profileId: string;
   agentDir?: string;
+  modelId?: string;
+  retryAfterMs?: number;
 }): Promise<void> {
   await markAuthProfileFailure({
     store: params.store,
     profileId: params.profileId,
-    reason: "unknown",
+    reason: "rate_limit",
     agentDir: params.agentDir,
+    modelId: params.modelId,
+    retryAfterMs: params.retryAfterMs,
   });
 }
 
@@ -288,8 +365,9 @@ export async function clearAuthProfileCooldown(params: {
   store: AuthProfileStore;
   profileId: string;
   agentDir?: string;
+  modelId?: string;
 }): Promise<void> {
-  const { store, profileId, agentDir } = params;
+  const { store, profileId, agentDir, modelId } = params;
   const updated = await updateAuthProfileStoreWithLock({
     agentDir,
     updater: (freshStore) => {
@@ -297,11 +375,23 @@ export async function clearAuthProfileCooldown(params: {
         return false;
       }
 
-      freshStore.usageStats[profileId] = {
-        ...freshStore.usageStats[profileId],
-        errorCount: 0,
-        cooldownUntil: undefined,
-      };
+      const stats = freshStore.usageStats[profileId];
+      if (modelId) {
+        if (stats.modelStats?.[modelId]) {
+          stats.modelStats[modelId] = {
+            ...stats.modelStats[modelId],
+            errorCount: 0,
+            cooldownUntil: undefined,
+          };
+        }
+      } else {
+        // Clear global profile cooldown
+        freshStore.usageStats[profileId] = {
+          ...stats,
+          errorCount: 0,
+          cooldownUntil: undefined,
+        };
+      }
       return true;
     },
   });
@@ -313,10 +403,21 @@ export async function clearAuthProfileCooldown(params: {
     return;
   }
 
-  store.usageStats[profileId] = {
-    ...store.usageStats[profileId],
-    errorCount: 0,
-    cooldownUntil: undefined,
-  };
+  const stats = store.usageStats[profileId];
+  if (modelId) {
+    if (stats.modelStats?.[modelId]) {
+      stats.modelStats[modelId] = {
+        ...stats.modelStats[modelId],
+        errorCount: 0,
+        cooldownUntil: undefined,
+      };
+    }
+  } else {
+    store.usageStats[profileId] = {
+      ...stats,
+      errorCount: 0,
+      cooldownUntil: undefined,
+    };
+  }
   saveAuthProfileStore(store, agentDir);
 }

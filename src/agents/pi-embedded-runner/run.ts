@@ -656,7 +656,7 @@ export async function runEmbeddedPiAgent(
             if (promptFailoverReason && promptFailoverReason !== "timeout" && lastProfileId) {
               const retryAfterMs = extractRetryAfterMs(promptError);
               if (promptFailoverReason === "rate_limit") {
-                logQuotaBreach(promptError, provider, modelId);
+                void logQuotaBreach(promptError, provider, modelId);
               }
               await markAuthProfileFailure({
                 store: authStore,

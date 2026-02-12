@@ -2,7 +2,6 @@ import {
   codingTools,
   createEditTool,
   createReadTool,
-  createWriteTool,
   readTool,
 } from "@mariozechner/pi-coding-agent";
 import type { OpenClawConfig } from "../config/config.js";

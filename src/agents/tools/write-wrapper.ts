@@ -22,9 +22,9 @@ export function createVerifiedWriteTool(workspaceRoot: string): AnyAgentTool {
     ...originalTool,
     execute: async (
       toolUseId: string,
-      params: any,
+      params: unknown,
       signal?: AbortSignal,
-      onUpdate?: (update: any) => void,
+      onUpdate?: (update: unknown) => void,
     ): Promise<unknown> => {
       // Execute the original write operation
       const result = await originalTool.execute(toolUseId, params, signal, onUpdate);

@@ -1,10 +1,5 @@
 import type { OpenClawConfig } from "../../config/config.js";
-import type {
-  AuthProfileFailureReason,
-  AuthProfileStore,
-  ProfileUsageStats,
-  ModelUsageStats,
-} from "./types.js";
+import type { AuthProfileFailureReason, AuthProfileStore, ProfileUsageStats } from "./types.js";
 import { normalizeProviderId } from "../model-selection.js";
 import { saveAuthProfileStore, updateAuthProfileStoreWithLock } from "./store.js";
 
